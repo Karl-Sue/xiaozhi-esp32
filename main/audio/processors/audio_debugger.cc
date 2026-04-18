@@ -6,8 +6,29 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <errno.h>
+#include <algorithm>
 #include <cstring>
 #include <string>
+#include <mbedtls/base64.h>
+
+namespace {
+std::string EncodeBase64(const uint8_t* data, size_t len) {
+    size_t output_len = 0;
+    int ret = mbedtls_base64_encode(nullptr, 0, &output_len, data, len);
+    if (ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL || output_len == 0) {
+        return "";
+    }
+
+    std::string encoded(output_len, '\0');
+    ret = mbedtls_base64_encode(reinterpret_cast<unsigned char*>(encoded.data()), output_len, &output_len, data, len);
+    if (ret != 0) {
+        return "";
+    }
+
+    encoded.resize(output_len);
+    return encoded;
+}
+}  // namespace
 #endif
 
 #define TAG "AudioDebugger"
@@ -53,6 +74,19 @@ AudioDebugger::~AudioDebugger() {
 
 void AudioDebugger::Feed(const std::vector<int16_t>& data) {
 #if CONFIG_USE_AUDIO_DEBUGGER
+    const uint8_t* pcm_bytes = reinterpret_cast<const uint8_t*>(data.data());
+    const size_t pcm_len = data.size() * sizeof(int16_t);
+    std::string encoded = EncodeBase64(pcm_bytes, pcm_len);
+    if (!encoded.empty()) {
+        constexpr size_t kChunkSize = 512;
+        for (size_t i = 0; i < encoded.size(); i += kChunkSize) {
+            size_t chunk_len = std::min(kChunkSize, encoded.size() - i);
+            ESP_LOGI(TAG, "MIC_PCM_BASE64: %.*s", static_cast<int>(chunk_len), encoded.c_str() + i);
+        }
+    } else {
+        ESP_LOGW(TAG, "Failed to encode PCM to base64");
+    }
+
     if (udp_sockfd_ >= 0) {
         ssize_t sent = sendto(udp_sockfd_, data.data(), data.size() * sizeof(int16_t), 0,
                              (struct sockaddr*)&udp_server_addr_, sizeof(udp_server_addr_));
